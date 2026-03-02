@@ -61,63 +61,76 @@ class SocketServer:
     def _handle_client(self, client_socket: socket.socket, address):
         """
         Lida com mensagens de um cliente
-        
+
         Args:
             client_socket: Socket do cliente
             address: Endereço do cliente
         """
         buffer = ""
-        
+
         try:
             while self.running:
                 data = client_socket.recv(4096).decode('utf-8')
-                
+
                 if not data:
                     break
-                
+
                 buffer += data
-                
+
                 # Processa mensagens completas (delimitadas por \n)
                 while '\n' in buffer:
                     message_str, buffer = buffer.split('\n', 1)
-                    
+
                     if message_str.strip():
-                        self._process_message(message_str)
-                        
+                        response_str = self._process_message(message_str)
+                        if response_str:
+                            client_socket.sendall((response_str + '\n').encode('utf-8'))
+
         except Exception as e:
             self.logger.error(f"Erro ao lidar com cliente {address}: {e}")
         finally:
             client_socket.close()
             self.logger.info(f"Conexão com {address} fechada")
     
-    def _process_message(self, message_str: str):
+    def _process_message(self, message_str: str) -> Optional[str]:
         """
-        Processa uma mensagem recebida
-        
+        Processa uma mensagem recebida e retorna resposta serializada, se houver.
+
         Args:
             message_str: String JSON da mensagem
+
+        Returns:
+            String JSON da resposta, ou None
         """
         try:
             # Parse JSON
             message_dict = json.loads(message_str)
-            
+
             # Valida checksum
             if not ChecksumValidator.verify_message(message_dict):
                 self.logger.warning("Mensagem recebida com checksum inválido - descartada")
-                return
-            
+                return None
+
             # Converte para objeto Message
             message = Message.from_json(message_str)
-            
+
             self.logger.debug(f"Mensagem recebida: {message.message_type.value} do nó {message.sender_id}")
-            
-            # Chama handler
-            self.message_handler(message)
-            
+
+            # Chama handler — pode retornar uma mensagem de resposta
+            response = self.message_handler(message)
+
+            if response is not None:
+                resp_dict = json.loads(response.to_json())
+                resp_dict = ChecksumValidator.add_checksum(resp_dict)
+                return json.dumps(resp_dict)
+
+            return None
+
         except json.JSONDecodeError as e:
             self.logger.error(f"Erro ao decodificar JSON: {e}")
         except Exception as e:
             self.logger.error(f"Erro ao processar mensagem: {e}")
+        return None
     
     def stop(self):
         """Para o servidor"""

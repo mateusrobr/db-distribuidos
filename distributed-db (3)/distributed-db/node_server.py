@@ -218,12 +218,15 @@ class DistributedDBNode:
                             self.logger.warning("Coordenador falhou - iniciando eleição")
                             self.coordinator.start_election(self.all_nodes)
     
-    def handle_message(self, message: Message):
+    def handle_message(self, message: Message) -> Optional[Message]:
         """
         Processa mensagem recebida
-        
+
         Args:
             message: Mensagem recebida
+
+        Returns:
+            Mensagem de resposta, ou None
         """
         try:
             handler_map = {
@@ -238,15 +241,17 @@ class DistributedDBNode:
                 MessageType.ACK: self.handle_election_ack,
                 MessageType.COORDINATOR: self.handle_coordinator_announcement,
             }
-            
+
             handler = handler_map.get(message.message_type)
             if handler:
-                handler(message)
+                return handler(message)
             else:
                 self.logger.warning(f"Tipo de mensagem desconhecido: {message.message_type}")
-                
+
         except Exception as e:
             self.logger.error(f"Erro ao processar mensagem: {e}", exc_info=True)
+
+        return None
     
     def handle_heartbeat(self, message: Message):
         """Processa heartbeat"""
@@ -260,24 +265,24 @@ class DistributedDBNode:
                 self.logger.info(f"Nó {sender_id} voltou a ficar ativo")
                 node.status = NodeStatus.ACTIVE
     
-    def handle_query(self, message: Message):
-        """Executa query localmente"""
+    def handle_query(self, message: Message) -> Message:
+        """Executa query localmente e retorna a resposta"""
         query = message.query
         transaction_id = message.transaction_id
-        
+
         self.logger.info(f"Executando query local: {query[:50]}...")
-        
+
         # Executa query
         success, data, error, rows_affected = self.db_manager.execute_query(query)
-        
+
         # Incrementa contador
         me = next(n for n in self.all_nodes if n.node_id == self.node_id)
         self.load_balancer.increment_query_count(me)
-        
-        # Se foi escrita bem-sucedida, COMMITA ANTES
+
+        # Se foi escrita bem-sucedida, commita
         if success and self.replicator.is_write_query(query):
             self.db_manager.commit()
-        
+
         # Prepara resposta
         result = QueryResult(
             success=success,
@@ -286,8 +291,7 @@ class DistributedDBNode:
             node_id=self.node_id,
             rows_affected=rows_affected
         )
-        
-        # ENVIA RESPOSTA IMEDIATAMENTE (antes de replicar!)
+
         response_msg = Message(
             message_type=MessageType.QUERY_RESPONSE,
             sender_id=self.node_id,
@@ -297,12 +301,16 @@ class DistributedDBNode:
             communication_type=CommunicationType.UNICAST,
             target_nodes=[message.sender_id]
         )
-        
-        self.send_message_wrapper(response_msg, self.all_nodes)
-        
-        # DEPOIS replica (assíncrono em relação ao cliente)
+
+        # Replica em background (assíncrono em relação ao cliente)
         if success and self.replicator.is_write_query(query):
-            self.replicator.replicate_query(query, transaction_id, self.all_nodes)
+            threading.Thread(
+                target=self.replicator.replicate_query,
+                args=(query, transaction_id, self.all_nodes),
+                daemon=True
+            ).start()
+
+        return response_msg
     
     def handle_prepare(self, message: Message):
         """Fase PREPARE do 2PC"""
