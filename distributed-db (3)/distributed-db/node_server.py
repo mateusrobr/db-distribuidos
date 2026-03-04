@@ -111,10 +111,12 @@ class DistributedDBNode:
             self.send_message_wrapper
         )
         
-        # Socket Server
+        # Socket Server — escuta em todas as interfaces (0.0.0.0)
+        # O host configurado é usado pelos outros nós para conectar,
+        # mas o bind deve aceitar conexões de qualquer interface local.
         network_config = self.node_config['network']
         self.socket_server = SocketServer(
-            host=network_config['host'],
+            host='0.0.0.0',
             port=network_config['port'],
             message_handler=self.handle_message
         )
