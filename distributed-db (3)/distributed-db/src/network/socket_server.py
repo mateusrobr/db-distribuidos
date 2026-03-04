@@ -70,9 +70,15 @@ class SocketServer:
 
         try:
             while self.running:
-                data = client_socket.recv(4096).decode('utf-8')
+                raw = client_socket.recv(4096)
 
-                if not data:
+                if not raw:
+                    break
+
+                try:
+                    data = raw.decode('utf-8')
+                except UnicodeDecodeError:
+                    self.logger.warning(f"Dados não-UTF-8 recebidos de {address} - ignorando conexão")
                     break
 
                 buffer += data
